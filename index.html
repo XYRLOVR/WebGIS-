@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>cesium示例</title>
+  <!-- 引用cesium的js和css，天地图的扩展js -->
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.92/Build/Cesium/Cesium.js"></script>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.92/Build/Cesium/Widgets/widgets.css" />
+  <script src="http://api.tianditu.gov.cn/cdn/plugins/cesium/cesiumTdt.js"></script>
+  <style type="text/css">
+    html,
+    body,
+    #tiandituContainer {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+  </style>
+
+</head>
+
+<body onload="loadData()">
+  <div id="tiandituContainer">
+  </div>
+  <div id="toolbarContainer" style="position: absolute; top: 10px; left: 10px; z-index: 1; background: rgba(42, 42, 42, 0.8); padding: 10px; border-radius: 5px; color: white;">
+    <div id="presetViewsContainer">
+      <button onclick="flyToView(1)">视点1</button>
+      <button onclick="flyToView(2)">视点2</button>
+      <button onclick="startTour()">开始漫游</button>
+      <!-- 停止漫游按钮将由JS动态添加/移除 -->
+    </div>
+    <div id="styleEditorContainer" style="margin-top: 15px;">
+      <h4>模型样式调整</h4>
+      <label for="modelColor">颜色: </label>
+      <input type="color" id="modelColorInput" value="#ffffff" style="vertical-align: middle;">
+      <br style="margin-bottom: 5px;">
+      <label for="modelAlpha">透明度: </label>
+      <input type="range" id="modelAlphaInput" min="0" max="1" step="0.01" value="1" style="vertical-align: middle; width: 100px;">
+      <span id="alphaValueLabel">1.00</span>
+      <br style="margin-bottom: 5px;">
+      <button onclick="applySelectedStyle()">应用样式</button>
+      <button onclick="resetStyle()">重置样式</button>
+    </div>
+
+    <div id="measurementToolContainer" style="margin-top: 15px;">
+      <h4>量测工具</h4>
+      <button id="distanceMeasureButton" onclick="startDistanceMeasurement()">开始测距</button>
+      <button onclick="clearMeasurements()">清除量测</button>
+      <div id="measurementResult" style="margin-top: 5px; color: white;"></div>
+    </div>
+  </div>
+  <script>
+
+    //Cesium官网注册后的授权token，没有token不能使用cesium在线的地形服务，这里需要改成自己的token
+    Cesium.Ion.defaultAccessToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJlYjUwZjQ2MS04MjUzLTRhMWEtYmE3Ny";
+
+    var viewer;
+    var tileset; // 声明全局 tileset 变量
+    var originalStyle; // 用于存储原始样式
+
+    function loadData() {
+      //默认会调用微软virtualearth地图
+      viewer = new Cesium.Viewer('tiandituContainer', {
+        animation: false,       //是否显示动画控件
+        homeButton: true,       //是否显示home键
+        geocoder: true,         //是否显示地名查找控件，如果设置为true，则无法查询
+        baseLayerPicker: true, //是否显示图层选择控件
+        timeline: false,        //是否显示时间线控件
+        fullscreenButton: true, //是否全屏显示
+        infoBox: true,         //是否显示点击要素之后显示的信息
+        sceneModePicker: true,  //是否显示投影方式控件  三维/二维
+        navigationInstructionsInitiallyVisible: false, //导航指令
+        navigationHelpButton: false,     //是否显示帮助信息控件
+        selectionIndicator: false, //是否显示指示器组件
+      });
+      //隐藏cesium的logo
+      viewer._cesiumWidget._creditContainer.style.display = "none";
+      //默认的Cesium会加载一个bingMap底图，这个地图网络不太好，一般要先去掉这个默认的
+      viewer.imageryLayers.remove(viewer.imageryLayers.get(0));
+
+
+
+      // 天地图影像底图
+      viewer.imageryLayers.addImageryProvider(new Cesium.WebMapTileServiceImageryProvider({
+        url: "http://t0.tianditu.gov.cn/img_w/wmts?tk=bb51ab049a80598e96bf0684ce21c526",
+        layer: "img",
+        style: "default",
+        tileMatrixSetID: "w",
+        format: "tiles",
+        maximumLevel: 18
+     }));
+
+
+
+      // 添加天地图影像注记底图
+      this.viewer.imageryLayers.addImageryProvider(new Cesium.WebMapTileServiceImageryProvider({
+        url: "http://t0.tianditu.gov.cn/cia_w/wmts?tk=bb51ab049a80598e96bf0684ce21c526",
+        layer: "cia",
+        style: "default",
+        tileMatrixSetID: "w",
+        format: "tiles",
+        maximumLevel: 18
+     }));
+
+
+      viewer.scene.globe.depthTestAgainstTerrain = true;//地形遮挡效果开关，打开后地形会遮挡看不到的区域
+      viewer.scene.globe.enableLighting = true; //对大气和雾启用动态照明效果
+
+      add3DTiles("./out/tileset.json", 108.279800, 23.181560, 22);
+
+      // 初始化模型交互
+      initModelInteraction();
+      // 初始化预设视点按钮
+      initPresetViews();
+      // 初始化样式编辑器
+      initStyleEditor();
+      // 初始化量测工具
+      initMeasurementTool();
+    }
+
+    function add3DTiles(url, longitude, latitude, height) {
+      // 使用全局的 tileset 变量
+      tileset = viewer.scene.primitives.add(
+        new Cesium.Cesium3DTileset({
+          url: url,
+          maximumScreenSpaceError: 2,//默认16,最大屏幕空间错误
+          //maximumNumberOfLoadedTiles: 1000,
+          maximumMemoryUsage: 512//默认512,内存MB的最大数量
+        }));
+      tileset.readyPromise.then(() => { // 移除内部的 tileset 参数，直接使用全局的 tileset
+
+        //模型加载后可能会有便宜和高度不对，需要对模型进行调整
+        //tileSet(tileset, longitude, latitude, height)
+        tileSetAll(tileset,longitude, latitude, height,0,0,0,1);
+
+        viewer.zoomTo(tileset);
+
+        // 添加模型标注
+        var modelLabel = viewer.entities.add({
+            position: tileset.boundingSphere.center,
+            label: {
+                text: '南宁师范大学武鸣校区第二教学楼',
+                font: '14pt monospace',
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                fillColor: Cesium.Color.BLACK,
+                outlineColor: Cesium.Color.WHITE,
+                outlineWidth: 3,
+                backgroundColor: Cesium.Color.WHITE.withAlpha(0.3),
+                verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+                pixelOffset: new Cesium.Cartesian2(0, -9) // 向上偏移一点，避免与模型中心重叠
+            }
+        });
+
+        // 设置模型点击事件
+        var handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+        handler.setInputAction(function (movement) {
+          var pickedObject = viewer.scene.pick(movement.position);
+          if (Cesium.defined(pickedObject) && Cesium.defined(pickedObject.primitive) && pickedObject.primitive instanceof Cesium.Cesium3DTileset) {
+            // 移除之前的高亮
+            if (Cesium.defined(window.highlightedFeature)) {
+              window.highlightedFeature.color = Cesium.Color.WHITE; // 或者模型的原始颜色
+            }
+            // 高亮当前选中的feature
+            if (Cesium.defined(pickedObject.feature)) {
+                window.highlightedFeature = pickedObject.feature;
+                pickedObject.feature.color = Cesium.Color.YELLOW;
+                // 显示信息 - 这里可以根据feature的属性来显示
+                var featureName = pickedObject.feature.getProperty('name') || '未命名要素';
+                console.log('选中的要素: ' + featureName);
+                // 您可以在这里创建一个浮动的信息框来显示更详细的信息
+                // 例如，创建一个div元素并设置其内容和位置
+                var infoDiv = document.getElementById('featureInfo');
+                if (!infoDiv) {
+                    infoDiv = document.createElement('div');
+                    infoDiv.id = 'featureInfo';
+                    infoDiv.style.position = 'absolute';
+                    infoDiv.style.bottom = '50px';
+                    infoDiv.style.left = '10px';
+                    infoDiv.style.padding = '10px';
+                    infoDiv.style.backgroundColor = 'rgba(0,0,0,0.7)';
+                    infoDiv.style.color = 'white';
+                    infoDiv.style.border = '1px solid white';
+                    infoDiv.style.borderRadius = '5px';
+                    document.body.appendChild(infoDiv);
+                }
+                infoDiv.innerHTML = '选中的要素: ' + featureName + '<br>点击位置: ' + movement.position.x.toFixed(2) + ', ' + movement.position.y.toFixed(2);
+            } else {
+                 var infoDiv = document.getElementById('featureInfo');
+                 if(infoDiv) infoDiv.innerHTML = ''; // 清空信息
+            }
+          } else {
+            if (Cesium.defined(window.highlightedFeature)) {
+              window.highlightedFeature.color = Cesium.Color.WHITE;
+              window.highlightedFeature = undefined;
+            }
+            var infoDiv = document.getElementById('featureInfo');
+            if(infoDiv) infoDiv.innerHTML = ''; // 清空信息
+          }
+        }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+      });
+
+
+    }
+    //利用translation对模型的经度、纬度、高度进行修改
+    function tileSet(tileset, longitude, latitude, height) {
+      //3dtile模型的边界球体
+      var boundingSphere = tileset.boundingSphere;
+      //迪卡尔空间直角坐标=>地理坐标（弧度制）
+      var cartographic_original = Cesium.Cartographic.fromCartesian(boundingSphere.center);
+      //设置新的经度、纬度、高度
+      var cartographic_offset = Cesium.Cartographic.fromDegrees(longitude, latitude, height)
+      //地理坐标（弧度制）=>迪卡尔空间直角坐标
+      var Cartesian3_original = Cesium.Cartesian3.fromRadians(cartographic_original.longitude, cartographic_original.latitude, cartographic_original.height);
+      var Cartesian3_offset = Cesium.Cartesian3.fromRadians(cartographic_offset.longitude, cartographic_offset.latitude, cartographic_offset.height);
+      //获得地面和offset的转换
+      var translation = Cesium.Cartesian3.subtract(Cartesian3_offset, Cartesian3_original, new Cesium.Cartesian3());
+      //修改模型矩阵
+      tileset.modelMatrix = Cesium.Matrix4.fromTranslation(translation);
+    }
+    //利用transform对模型的所有参数进行修改
+    function tileSetAll(tileset, longitude, latitude, height, rotateX, rotateY, rotateZ, scale) {
+      //旋转角度设置
+      var mx = Cesium.Matrix3.fromRotationX(Cesium.Math.toRadians(rotateX));
+      var my = Cesium.Matrix3.fromRotationY(Cesium.Math.toRadians(rotateY));
+      var mz = Cesium.Matrix3.fromRotationZ(Cesium.Math.toRadians(rotateZ));
+      var rotationX = Cesium.Matrix4.fromRotationTranslation(mx);
+      var rotationY = Cesium.Matrix4.fromRotationTranslation(my);
+      var rotationZ = Cesium.Matrix4.fromRotationTranslation(mz);
+      //平移 修改经纬度
+      var position = Cesium.Cartesian3.fromDegrees(longitude, latitude, height);
+      var transform = Cesium.Transforms.eastNorthUpToFixedFrame(position);
+      //旋转、平移矩阵相乘
+      Cesium.Matrix4.multiply(transform, rotationX, transform);
+      Cesium.Matrix4.multiply(transform, rotationY, transform);
+      Cesium.Matrix4.multiply(transform, rotationZ, transform);
+      //缩放 修改缩放比例
+      var scale1 = Cesium.Matrix4.fromUniformScale(scale);
+      Cesium.Matrix4.multiply(transform, scale1, transform);
+      //赋值给tileset
+      tileset._root.transform = transform;
+    
+    }
+
+    function initModelInteraction() {
+      // 此函数目前为空，因为交互逻辑已直接在 add3DTiles 的 readyPromise 中实现。
+      // 如果需要更复杂的初始化，可以在这里添加。
+      console.log("模型交互已设置。");
+    }
+
+    function initPresetViews() {
+      // 此函数用于初始化预设视点按钮的逻辑，实际的按钮已在HTML中创建。
+      // 如果需要动态创建按钮或更复杂的逻辑，可以在这里添加。
+      console.log("预设视点按钮已初始化。");
+    }
+
+    function flyToView(viewId) {
+      if (viewId === 1) {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(108.277500, 23.175000, 800),
+          orientation: {
+            heading: Cesium.Math.toRadians(0.0),
+            pitch: Cesium.Math.toRadians(-45.0),
+          }
+        });
+      } else if (viewId === 2) {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(108.27000, 23.180460, 500),
+          orientation: {
+            heading: Cesium.Math.toRadians(90.0),
+            pitch: Cesium.Math.toRadians(-30.0),
+            roll: 0.0
+          }
+        });
+      }
+    }
+
+    let tourStopRequested = false;
+    let tourPath = [
+        { lon: 108.279800, lat: 23.181560, height: 500, duration: 5 },
+        { lon: 108.281800, lat: 23.180560, height: 450, duration: 5 },
+        { lon: 108.283800, lat: 23.182560, height: 550, duration: 5 },
+        { lon: 108.280800, lat: 23.183560, height: 600, duration: 5 },
+    ];
+    let currentTourIndex = 0;
+
+    function flyToNextTourStop() {
+        if (tourStopRequested || currentTourIndex >= tourPath.length) {
+            console.log("漫游结束或已停止。");
+            tourStopRequested = false; // 重置以便下次漫游
+            currentTourIndex = 0;
+            // 可以考虑禁用停止按钮或更改按钮文本
+            return;
+        }
+
+        const stop = tourPath[currentTourIndex];
+        viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(stop.lon, stop.lat, stop.height),
+            orientation: {
+                heading: Cesium.Math.toRadians(currentTourIndex * 45.0), // 简单示例，每次转45度
+                pitch: Cesium.Math.toRadians(-35.0),
+            },
+            duration: stop.duration, // 飞行到下一个点的时间
+            complete: function () {
+                // 到达一个点后，短暂延迟后飞向下一个点
+                setTimeout(function(){
+                    currentTourIndex++;
+                    flyToNextTourStop();
+                }, 1000); // 到达后停留1秒
+            }
+        });
+    }
+
+    function startTour() {
+        console.log("开始漫游。");
+        tourStopRequested = false;
+        currentTourIndex = 0;
+        flyToNextTourStop();
+        // 可以考虑添加一个停止漫游的按钮
+        var stopButton = document.createElement('button');
+        stopButton.innerHTML = '停止漫游';
+        stopButton.onclick = function() {
+            tourStopRequested = true;
+            console.log("请求停止漫游。");
+            this.remove(); // 点击后移除停止按钮
+        };
+        var container = document.getElementById('presetViewsContainer');
+        // 防止重复添加停止按钮
+        if (!document.getElementById('stopTourButton')) {
+            stopButton.id = 'stopTourButton';
+            container.appendChild(stopButton);
+        }
+    }
+
+
+    function initStyleEditor() {
+      console.log("样式编辑器已初始化。");
+      const alphaSlider = document.getElementById('modelAlphaInput');
+      const alphaLabel = document.getElementById('alphaValueLabel');
+      alphaSlider.addEventListener('input', function() {
+        alphaLabel.textContent = parseFloat(this.value).toFixed(2);
+      });
+      // 可以在这里保存模型的初始样式，如果需要的话
+      if (tileset) {
+        // Cesium3DTileStyle的默认构造是空的，或者可以基于条件设置
+        // 这里我们假设初始是无特殊样式（即模型的原始外观）
+        originalStyle = new Cesium.Cesium3DTileStyle({}); 
+      }
+    }
+
+    function applySelectedStyle() {
+      if (!tileset) {
+        console.warn("模型尚未加载，无法应用样式。");
+        return;
+      }
+      const colorValue = document.getElementById('modelColorInput').value;
+      const alphaValue = parseFloat(document.getElementById('modelAlphaInput').value);
+
+      const newColor = Cesium.Color.fromCssColorString(colorValue).withAlpha(alphaValue);
+
+      tileset.style = new Cesium.Cesium3DTileStyle({
+        color: "color('" + newColor.toCssColorString() + "')"
+      });
+      console.log("样式已应用: Color=", newColor.toCssColorString());
+    }
+
+    function resetStyle() {
+      if (!tileset) {
+        console.warn("模型尚未加载，无法重置样式。");
+        return;
+      }
+      // 重置为没有额外样式，显示模型原始外观
+      // 或者，如果保存了originalStyle，可以恢复到originalStyle
+      tileset.style = new Cesium.Cesium3DTileStyle({}); 
+      // 更新UI控件到默认值
+      document.getElementById('modelColorInput').value = "#ffffff";
+      document.getElementById('modelAlphaInput').value = 1;
+      document.getElementById('alphaValueLabel').textContent = "1.00";
+      console.log("样式已重置。");
+    }
+
+
+
+
+
+    var measurementHandler; // 量测事件处理器
+    var activeShapePoints = []; // 当前绘制的点
+    var activeShape; // 当前绘制的线
+    var floatingPoint; // 鼠标移动时跟随的点
+    var measurementEntities = []; // 存储所有量测相关的实体
+    var measuring = false;
+
+    function initMeasurementTool() {
+      console.log("量测工具已初始化。");
+      measurementHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    }
+
+    function startDistanceMeasurement() {
+      if (measuring) {
+        // 如果已经在测量中，则结束当前测量
+        terminateMeasurement(); 
+        return;
+      }
+      measuring = true;
+      document.getElementById('distanceMeasureButton').innerHTML = '结束测距';
+      document.getElementById('measurementResult').innerHTML = '请在地图上点击选择点位';
+
+      // 左键点击添加点
+      measurementHandler.setInputAction(function (event) {
+        var earthPosition = viewer.camera.pickEllipsoid(event.position, viewer.scene.globe.ellipsoid);
+        if (Cesium.defined(earthPosition)) {
+          if (activeShapePoints.length === 0) {
+            floatingPoint = createPoint(earthPosition);
+            measurementEntities.push(floatingPoint);
+            activeShapePoints.push(earthPosition);
+            var dynamicPositions = new Cesium.CallbackProperty(function () {
+              return activeShapePoints;
+            }, false);
+            activeShape = createPolyline(dynamicPositions);
+            measurementEntities.push(activeShape);
+          } else {
+             activeShapePoints.push(earthPosition);
+             createPoint(earthPosition); // 创建固定点
+             // 如果需要，可以在这里更新总长度显示
+             updateDistanceDisplay();
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+      // 鼠标移动更新浮动点和动态线
+      measurementHandler.setInputAction(function (movement) {
+        if (Cesium.defined(floatingPoint)) {
+          var newPosition = viewer.camera.pickEllipsoid(movement.endPosition, viewer.scene.globe.ellipsoid);
+          if (Cesium.defined(newPosition)) {
+            floatingPoint.position.setValue(newPosition);
+            if(activeShapePoints.length > 0) {
+                // 更新动态线的最后一个点为当前鼠标位置
+                // 为了实现动态线段，我们需要确保 activeShapePoints 的最后一个点是动态的
+                // 一个简单的方法是，如果只有一个固定点，则动态线的第二个点是鼠标位置
+                // 如果有多个固定点，则最后一条线段的终点是鼠标位置
+                let dynamicPointsForLine = activeShapePoints.slice(); // 复制数组
+                dynamicPointsForLine.push(newPosition);
+                activeShape.polyline.positions = new Cesium.CallbackProperty(() => dynamicPointsForLine, false);
+                updateDistanceDisplay(dynamicPointsForLine); // 传入动态点计算临时总长
+            }
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+      // 右键点击结束绘制
+      measurementHandler.setInputAction(function (event) {
+        terminateMeasurement();
+      }, Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+    }
+
+    function terminateMeasurement() {
+        if (!measuring) return;
+
+        measuring = false;
+        document.getElementById('distanceMeasureButton').innerHTML = '开始测距';
+        
+        // 移除浮动点，如果它只用于预览下一个点
+        if (floatingPoint) {
+            viewer.entities.remove(floatingPoint);
+            floatingPoint = undefined;
+        }
+
+        // 将动态线变为固定线 (如果 CallbackProperty 仍然依赖于会改变的 activeShapePoints，需要处理)
+        // 实际上，当点固定后，CallbackProperty 应该返回固定的点集
+        // 如果 activeShapePoints 最后一个点是浮动点，需要移除
+        if (activeShape && activeShapePoints.length > 0) {
+            // 确保 activeShape 的 positions 是最终的点集
+            let finalPoints = activeShapePoints.slice();
+            activeShape.polyline.positions = finalPoints;
+            updateDistanceDisplay(finalPoints); // 显示最终长度
+        } else {
+            document.getElementById('measurementResult').innerHTML = '';
+        }
+
+        activeShapePoints = [];
+        // activeShape = undefined; // 保留绘制的线，除非清除
+
+        // 清除事件监听
+        measurementHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK);
+        measurementHandler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+        measurementHandler.removeInputAction(Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+        console.log("测距结束。");
+    }
+
+    function createPoint(worldPosition) {
+      var point = viewer.entities.add({
+        position: worldPosition,
+        point: {
+          color: Cesium.Color.YELLOW,
+          pixelSize: 8,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY // 总是可见
+        }
+      });
+      measurementEntities.push(point);
+      return point;
+    }
+
+    function createPolyline(positions) {
+      var polyline = viewer.entities.add({
+        polyline: {
+          positions: positions,
+          clampToGround: true,
+          width: 3,
+          material: Cesium.Color.RED,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY // 总是可见
+        }
+      });
+      measurementEntities.push(polyline);
+      return polyline;
+    }
+
+    function calculateDistance(points) {
+        let totalDistance = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i];
+            const p2 = points[i+1];
+            totalDistance += Cesium.Cartesian3.distance(p1, p2);
+        }
+        return totalDistance;
+    }
+
+    function updateDistanceDisplay(pointsArray) {
+        const pointsToMeasure = pointsArray || activeShapePoints;
+        if (pointsToMeasure.length < 2) {
+            document.getElementById('measurementResult').innerHTML = '请继续选择点位';
+            return;
+        }
+        const distance = calculateDistance(pointsToMeasure);// ...
+const presetViews = [
+    {
+        name: "视点1",
+        destination: Cesium.Cartesian3.fromDegrees(116.39744983539999, 39.90999984741211, 1500.0), // 修改这里的经纬高
+        orientation: {
+            heading: Cesium.Math.toRadians(0.0), // 修改这里的朝向
+            pitch: Cesium.Math.toRadians(-90.0),
+            roll: 0.0
+        }
+    },
+    // ... 其他视点
+];
+// ...
+        document.getElementById('measurementResult').innerHTML = '总距离: ' + distance.toFixed(2) + ' 米';
+    }
+
+    function clearMeasurements() {
+      if (measuring) {
+          terminateMeasurement(); // 如果正在测量，先结束它
+      }
+      for (var i = 0; i < measurementEntities.length; i++) {
+        viewer.entities.remove(measurementEntities[i]);
+      }
+      measurementEntities = [];
+      activeShapePoints = [];
+      if(activeShape) viewer.entities.remove(activeShape); // 以防万一activeShape未在entities数组中
+      activeShape = undefined;
+      if(floatingPoint) viewer.entities.remove(floatingPoint);
+      floatingPoint = undefined;
+      document.getElementById('measurementResult').innerHTML = '';
+      document.getElementById('distanceMeasureButton').innerHTML = '开始测距';
+      measuring = false; // 确保状态重置
+      // 确保所有事件处理器都被移除，以防 terminateMeasurement 未完全执行
+      if (measurementHandler) {
+        measurementHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK);
+        measurementHandler.removeInputAction(Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+        measurementHandler.removeInputAction(Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+      }
+      console.log("所有量测已清除。");
+    }
+
+  </script>
+</body>
+
+</html>
